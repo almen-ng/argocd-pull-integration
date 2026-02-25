@@ -10,7 +10,7 @@ spec:
     targetRevision: HEAD
     path: guestbook
   destination:
-    server: https://172.18.255.200:443?agentName=cluster1
+    server: https://<PRINCIPAL_ADDRESS>:<PRINCIPAL_PORT>?agentName=cluster1
     namespace: guestbook
   syncPolicy:
     automated:

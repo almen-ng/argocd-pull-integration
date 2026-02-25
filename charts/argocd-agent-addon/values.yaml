@@ -15,6 +15,10 @@ argoCDOperatorTag: v0.17.0
 argoCDAgentImage: quay.io/argoprojlabs/argocd-agent
 argoCDAgentTag: v0.5.3
 
+# Principal service type: LoadBalancer for production (cloud LB),
+# NodePort for local dev (e.g. kind) - override via --set principalServiceType=NodePort
+principalServiceType: LoadBalancer
+
 # Hub ArgoCD settings
 global:
   argoCDOperatorNamespace: argocd-operator-system

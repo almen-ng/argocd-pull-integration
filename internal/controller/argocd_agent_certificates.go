@@ -325,16 +325,14 @@ func (r *GitOpsClusterReconciler) loadCACertificate(
 	return signingCertKeyPair, caBundleCerts, nil
 }
 
-// getPrincipalHostNames returns the hostnames for the principal certificate
-// For principal, we need external endpoints (LoadBalancer IPs/hostnames) plus internal DNS
+// getPrincipalHostNames returns the hostnames for the principal certificate.
+// Includes LoadBalancer IPs/hostnames, NodePort node IPs, and internal DNS names.
 func (r *GitOpsClusterReconciler) getPrincipalHostNames(ctx context.Context, namespace string) []string {
 	hostnames := []string{}
 
-	// Try to get the service to find LoadBalancer endpoints
 	service, err := r.findArgoCDAgentPrincipalService(ctx, namespace)
 	if err != nil {
 		klog.V(2).InfoS("Could not find principal service for hostname discovery, using defaults", "error", err)
-		// Return default internal hostnames
 		serviceName := "argocd-agent-principal"
 		return []string{
 			fmt.Sprintf("%s.%s.svc", serviceName, namespace),
@@ -349,10 +347,23 @@ func (r *GitOpsClusterReconciler) getPrincipalHostNames(ctx context.Context, nam
 			klog.V(2).InfoS("Added LoadBalancer hostname to principal certificate", "hostname", ingress.Hostname)
 		}
 		if ingress.IP != "" {
-			// IPs should be added but cert libraries typically use IPs field, not DNS names
-			// Still add as hostname for compatibility
 			hostnames = append(hostnames, ingress.IP)
 			klog.V(2).InfoS("Added LoadBalancer IP to principal certificate", "ip", ingress.IP)
+		}
+	}
+
+	// For NodePort services, include node IPs so agents connecting via NodePort pass TLS validation
+	if service.Spec.Type == corev1.ServiceTypeNodePort {
+		nodeList := &corev1.NodeList{}
+		if err := r.List(ctx, nodeList); err == nil {
+			for _, node := range nodeList.Items {
+				for _, addr := range node.Status.Addresses {
+					if addr.Type == corev1.NodeInternalIP {
+						hostnames = append(hostnames, addr.Address)
+						klog.V(2).InfoS("Added node IP to principal certificate for NodePort", "ip", addr.Address)
+					}
+				}
+			}
 		}
 	}
 
@@ -362,7 +373,6 @@ func (r *GitOpsClusterReconciler) getPrincipalHostNames(ctx context.Context, nam
 		fmt.Sprintf("%s.%s.svc.cluster.local", service.Name, namespace),
 	)
 
-	// Add localhost for local access
 	hostnames = append(hostnames, "localhost", "127.0.0.1", "::1")
 
 	return hostnames

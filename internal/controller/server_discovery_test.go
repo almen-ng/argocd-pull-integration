@@ -150,6 +150,51 @@ func TestEnsureServerAddressAndPort(t *testing.T) {
 			expectedPort:    "8443",
 		},
 		{
+			name: "discovers NodePort with node IP",
+			existingObjs: []runtime.Object{
+				&corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      ArgoCDAgentPrincipalServiceName,
+						Namespace: namespace,
+					},
+					Spec: corev1.ServiceSpec{
+						Type: corev1.ServiceTypeNodePort,
+						Ports: []corev1.ServicePort{
+							{
+								Name:       "https",
+								Port:       443,
+								TargetPort: intstr.FromInt(8443),
+								NodePort:   31234,
+							},
+						},
+					},
+				},
+				&corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-node",
+					},
+					Status: corev1.NodeStatus{
+						Addresses: []corev1.NodeAddress{
+							{Type: corev1.NodeInternalIP, Address: "172.18.0.2"},
+						},
+					},
+				},
+			},
+			gitOpsCluster: &appsv1alpha1.GitOpsCluster{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: namespace,
+				},
+				Spec: appsv1alpha1.GitOpsClusterSpec{
+					ArgoCDAgentAddon: appsv1alpha1.ArgoCDAgentAddonSpec{},
+				},
+			},
+			wantUpdated:     true,
+			wantErr:         false,
+			expectedAddress: "172.18.0.2",
+			expectedPort:    "31234",
+		},
+		{
 			name:         "fails when service not found",
 			existingObjs: []runtime.Object{},
 			gitOpsCluster: &appsv1alpha1.GitOpsCluster{

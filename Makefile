@@ -88,10 +88,7 @@ setup-e2e-clusters: ## Setup KinD clusters, build and load controller image
 	$(KIND) load docker-image $(E2E_IMG) --name $(SPOKE_CLUSTER)
 
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet ## Run e2e deployment tests only (checks pods running and logs)
-	@echo "===== Installing MetalLB ====="
-	./test/e2e/scripts/install_metallb.sh
-	@echo ""
+test-e2e: manifests generate fmt vet ## Run full e2e tests (deploy + AppProject/Application sync + status reflection)
 	@echo "===== Setting up OCM environment ====="
 	CLUSTERADM_VERSION=$(CLUSTERADM_VERSION) ./test/e2e/scripts/setup_ocm_env.sh
 	@echo ""
@@ -103,73 +100,27 @@ test-e2e: manifests generate fmt vet ## Run e2e deployment tests only (checks po
 		--create-namespace \
 		--set image=quay.io/open-cluster-management/argocd-pull-integration \
 		--set tag=latest \
+		--set principalServiceType=NodePort \
 		--wait \
 		--timeout 10m
 	@echo ""
-	@echo "===== Running e2e deployment tests ====="
-	go test -tags=e2e ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter="deploy"
+	@echo "===== Waiting for ArgoCD principal service ====="
+	$(KUBECTL) --context kind-$(HUB_CLUSTER) wait --for=jsonpath='{.spec.type}'=NodePort \
+		svc/argocd-agent-principal -n argocd --timeout=120s || true
 	@echo ""
-	@echo "===== E2E Deployment Tests Complete ====="
-	@echo "Hub context: kind-$(HUB_CLUSTER)"
-	@echo "Spoke context: kind-$(SPOKE_CLUSTER)"
-	@echo ""
-	@echo "Verify deployment with:"
-	@echo "  # Hub cluster resources"
-	@echo "  kubectl get pods -n argocd --context kind-$(HUB_CLUSTER)"
-	@echo "  kubectl logs -n argocd -l app.kubernetes.io/name=argocd-pull-integration-controller --context kind-$(HUB_CLUSTER) --tail=20"
-	@echo ""
-	@echo "  # Spoke cluster resources"
-	@echo "  kubectl get pods -n open-cluster-management-agent-addon --context kind-$(SPOKE_CLUSTER)"
-	@echo "  kubectl logs -n open-cluster-management-agent-addon -l app=argocd-agent-addon --context kind-$(SPOKE_CLUSTER) --tail=20"
-	@echo "  kubectl get pods -n argocd --context kind-$(SPOKE_CLUSTER)"
-	@echo "  kubectl logs -n argocd -l app.kubernetes.io/name=argocd-agent-agent --context kind-$(SPOKE_CLUSTER) --tail=20"
-
-.PHONY: test-e2e-integration
-test-e2e-integration: ## Run full e2e integration tests including AppProject and Application sync (assumes setup already done)
-	@echo "===== Running full e2e integration tests ====="
+	@echo "===== Running e2e tests ====="
 	go test -tags=e2e ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter="full"
 	@echo ""
-	@echo "===== Full E2E Integration Tests Complete ====="
+	@echo "===== E2E Tests Complete ====="
 
 .PHONY: test-e2e-full
-test-e2e-full: ## Complete e2e test with kind cluster setup, build, deployment, and full integration tests
+test-e2e-full: ## Complete e2e test with kind cluster setup, build, and full integration tests
 	$(MAKE) setup-e2e-clusters
 	@echo ""
-	@echo "===== Running deployment tests ====="
 	$(MAKE) test-e2e
-	@echo ""
-	@echo "===== Running full integration tests ====="
-	$(MAKE) test-e2e-integration
-	@echo "Verify deployment with:"
-	@echo "  # Hub cluster resources"
-	@echo "  kubectl get pods -n argocd --context kind-$(HUB_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get clustermanagementaddon --context kind-$(HUB_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get gitopscluster -n argocd --context kind-$(HUB_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get managedclusteraddon -n $(SPOKE_CLUSTER) --context kind-$(HUB_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get appproject -n argocd --context kind-$(HUB_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get application -n $(SPOKE_CLUSTER) --context kind-$(HUB_CLUSTER)"
-	@echo "  sleep 2"
-	@echo ""
-	@echo "  # Spoke cluster resources"
-	@echo "  kubectl get pods -n open-cluster-management-agent-addon --context kind-$(SPOKE_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get pods -n argocd --context kind-$(SPOKE_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get appproject -n argocd --context kind-$(SPOKE_CLUSTER)"
-	@echo "  sleep 2"
-	@echo "  kubectl get application -n argocd --context kind-$(SPOKE_CLUSTER)"
-	@echo "  sleep 2"
 
 .PHONY: test-e2e-cleanup
 test-e2e-cleanup: manifests generate fmt vet ## Run e2e cleanup tests (checks addon cleanup behavior)
-	@echo "===== Installing MetalLB ====="
-	./test/e2e/scripts/install_metallb.sh
-	@echo ""
 	@echo "===== Setting up OCM environment ====="
 	CLUSTERADM_VERSION=$(CLUSTERADM_VERSION) ./test/e2e/scripts/setup_ocm_env.sh
 	@echo ""
@@ -181,8 +132,13 @@ test-e2e-cleanup: manifests generate fmt vet ## Run e2e cleanup tests (checks ad
 		--create-namespace \
 		--set image=quay.io/open-cluster-management/argocd-pull-integration \
 		--set tag=latest \
+		--set principalServiceType=NodePort \
 		--wait \
 		--timeout 10m
+	@echo ""
+	@echo "===== Waiting for ArgoCD principal service ====="
+	$(KUBECTL) --context kind-$(HUB_CLUSTER) wait --for=jsonpath='{.spec.type}'=NodePort \
+		svc/argocd-agent-principal -n argocd --timeout=120s || true
 	@echo ""
 	@echo "===== Running cleanup e2e tests ====="
 	go test -tags=e2e ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter="cleanup"
@@ -193,9 +149,6 @@ test-e2e-cleanup: manifests generate fmt vet ## Run e2e cleanup tests (checks ad
 test-e2e-cleanup-full: ## Complete e2e test with cleanup verification including Application (cluster setup + deployment + cleanup)
 	$(MAKE) setup-e2e-clusters
 	@echo ""
-	@echo "===== Installing MetalLB ====="
-	./test/e2e/scripts/install_metallb.sh
-	@echo ""
 	@echo "===== Setting up OCM environment ====="
 	CLUSTERADM_VERSION=$(CLUSTERADM_VERSION) ./test/e2e/scripts/setup_ocm_env.sh
 	@echo ""
@@ -207,8 +160,13 @@ test-e2e-cleanup-full: ## Complete e2e test with cleanup verification including 
 		--create-namespace \
 		--set image=quay.io/open-cluster-management/argocd-pull-integration \
 		--set tag=latest \
+		--set principalServiceType=NodePort \
 		--wait \
 		--timeout 10m
+	@echo ""
+	@echo "===== Waiting for ArgoCD principal service ====="
+	$(KUBECTL) --context kind-$(HUB_CLUSTER) wait --for=jsonpath='{.spec.type}'=NodePort \
+		svc/argocd-agent-principal -n argocd --timeout=120s || true
 	@echo ""
 	@echo "===== Running full cleanup e2e tests (with Application) ====="
 	go test -tags=e2e ./test/e2e/ -v -ginkgo.v --ginkgo.label-filter="cleanup-full"
@@ -219,9 +177,6 @@ test-e2e-cleanup-full: ## Complete e2e test with cleanup verification including 
 
 .PHONY: test-e2e-custom-namespace
 test-e2e-custom-namespace: manifests generate fmt vet ## Run e2e test with custom ArgoCD namespaces (hub: notargocd, spoke: argocdnot)
-	@echo "===== Installing MetalLB ====="
-	./test/e2e/scripts/install_metallb.sh
-	@echo ""
 	@echo "===== Setting up OCM environment ====="
 	CLUSTERADM_VERSION=$(CLUSTERADM_VERSION) ./test/e2e/scripts/setup_ocm_env.sh
 	@echo ""
@@ -239,6 +194,7 @@ test-e2e-custom-namespace: manifests generate fmt vet ## Run e2e test with custo
 		--set gitOpsCluster.argoCDAgentAddon.operatorNamespace=argocdnot-operator-system \
 		--set image=quay.io/open-cluster-management/argocd-pull-integration \
 		--set tag=latest \
+		--set principalServiceType=NodePort \
 		--wait \
 		--timeout 10m
 	@echo ""

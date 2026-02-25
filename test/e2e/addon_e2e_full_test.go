@@ -459,12 +459,39 @@ spec:
 		})
 
 		It("should sync Application from hub to spoke and reflect status", func() {
+			By("discovering principal server address from GitOpsCluster")
+			var principalAddr, principalPort string
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "--context", hubContext,
+					"get", "gitopscluster", "gitops-cluster",
+					"-n", argoCDNamespace,
+					"-o", "jsonpath={.spec.argoCDAgentAddon.principalServerAddress}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "Principal server address should be discovered")
+				principalAddr = output
+			}).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				cmd := exec.Command("kubectl", "--context", hubContext,
+					"get", "gitopscluster", "gitops-cluster",
+					"-n", argoCDNamespace,
+					"-o", "jsonpath={.spec.argoCDAgentAddon.principalServerPort}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty(), "Principal server port should be discovered")
+				principalPort = output
+			}).Should(Succeed())
+
+			destinationServer := fmt.Sprintf("https://%s:%s?agentName=cluster1", principalAddr, principalPort)
+			fmt.Fprintf(GinkgoWriter, "Using destination server: %s\n", destinationServer)
+
 			By("creating cluster1 namespace on hub")
 			cmd := exec.Command("kubectl", "--context", hubContext, "create", "namespace", "cluster1")
-			_, _ = utils.Run(cmd) // Ignore error if namespace already exists
+			_, _ = utils.Run(cmd)
 
 			By("creating Application on hub in cluster1 namespace")
-			applicationYAML := `apiVersion: argoproj.io/v1alpha1
+			applicationYAML := fmt.Sprintf(`apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: test-app
@@ -476,14 +503,14 @@ spec:
     targetRevision: HEAD
     path: guestbook
   destination:
-    server: https://172.18.255.200:443?agentName=cluster1
+    server: %s
     namespace: guestbook
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
     syncOptions:
-    - CreateNamespace=true`
+    - CreateNamespace=true`, destinationServer)
 			appCmd := exec.Command("kubectl", "--context", hubContext, "apply", "-f", "-")
 			appCmd.Stdin = strings.NewReader(applicationYAML)
 			_, err := utils.Run(appCmd)
@@ -498,12 +525,9 @@ spec:
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("test-app"))
-			}, 30*time.Second, 5*time.Second).Should(Succeed())
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("waiting for Application status to be populated on spoke")
-			time.Sleep(10 * time.Second)
-
-			By("verifying Application status on spoke is not empty")
+			By("verifying Application status on spoke is populated")
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "--context", cluster1Context,
 					"get", "application", "test-app",
@@ -512,7 +536,7 @@ spec:
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).NotTo(BeEmpty(), "Spoke Application sync status should not be empty")
-			}, 20*time.Second).Should(Succeed())
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("getting Application status from spoke")
 			var spokeSyncStatus, spokeHealthStatus string
@@ -523,6 +547,7 @@ spec:
 					"-o", "jsonpath={.status.sync.status}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
 				spokeSyncStatus = output
 
 				cmd = exec.Command("kubectl", "--context", cluster1Context,
@@ -532,7 +557,7 @@ spec:
 				output, err = utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				spokeHealthStatus = output
-			}).Should(Succeed())
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			By(fmt.Sprintf("Spoke status - Sync: %s, Health: %s", spokeSyncStatus, spokeHealthStatus))
 
@@ -546,7 +571,7 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).NotTo(BeEmpty(), "Hub Application sync status should not be empty")
 				g.Expect(output).To(Equal(spokeSyncStatus), "Hub and Spoke sync status should match")
-			}, 30*time.Second).Should(Succeed())
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
 			Eventually(func(g Gomega) {
 				cmd := exec.Command("kubectl", "--context", hubContext,
@@ -557,9 +582,9 @@ spec:
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).NotTo(BeEmpty(), "Hub Application health status should not be empty")
 				g.Expect(output).To(Equal(spokeHealthStatus), "Hub and Spoke health status should match")
-			}, 30*time.Second).Should(Succeed())
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-			By("Hub and Spoke Application status are in sync ✓")
+			By("Hub and Spoke Application status are in sync")
 		})
 	})
 })

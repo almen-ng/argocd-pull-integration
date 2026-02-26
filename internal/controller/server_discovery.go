@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 
 	appsv1alpha1 "open-cluster-management.io/argocd-pull-integration/api/v1alpha1"
@@ -67,22 +68,21 @@ func (r *GitOpsClusterReconciler) EnsureServerAddressAndPort(
 	return true, nil
 }
 
-// discoverServerAddressAndPort discovers the external server address and port from the ArgoCD agent principal service
+// discoverServerAddressAndPort discovers the external server address and port from the ArgoCD agent principal service.
+// It supports both LoadBalancer and NodePort service types.
 func (r *GitOpsClusterReconciler) discoverServerAddressAndPort(
 	ctx context.Context,
 	argoCDNamespace string) (string, string, error) {
 
-	// Find the ArgoCD agent principal service
 	service, err := r.findArgoCDAgentPrincipalService(ctx, argoCDNamespace)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to find ArgoCD agent principal service: %w", err)
 	}
 
-	// Look for LoadBalancer external endpoints
 	var serverAddress string
-	var serverPort string = "443" // Default HTTPS port
+	var serverPort string = "443"
 
-	// Try to get external LoadBalancer hostname or IP
+	// Try LoadBalancer ingress first
 	for _, ingress := range service.Status.LoadBalancer.Ingress {
 		if ingress.Hostname != "" {
 			serverAddress = ingress.Hostname
@@ -96,19 +96,61 @@ func (r *GitOpsClusterReconciler) discoverServerAddressAndPort(
 		}
 	}
 
-	if serverAddress == "" {
-		return "", "", fmt.Errorf("no external LoadBalancer IP or hostname found for service %s in namespace %s", service.Name, argoCDNamespace)
+	if serverAddress != "" {
+		for _, port := range service.Spec.Ports {
+			if port.Name == "https" || port.Port == 443 || port.Port == 8443 {
+				serverPort = strconv.Itoa(int(port.Port))
+				break
+			}
+		}
+		klog.InfoS("Discovered ArgoCD agent server endpoint", "address", serverAddress, "port", serverPort)
+		return serverAddress, serverPort, nil
 	}
 
-	// Try to get the actual port from the service spec
-	for _, port := range service.Spec.Ports {
-		if port.Name == "https" || port.Port == 443 || port.Port == 8443 {
-			serverPort = strconv.Itoa(int(port.Port))
-			klog.InfoS("Discovered server port from service spec", "port", serverPort)
-			break
+	// Fallback to NodePort: use a node's InternalIP + the assigned NodePort
+	if service.Spec.Type == corev1.ServiceTypeNodePort {
+		nodeIP, err := r.getNodeInternalIP(ctx)
+		if err != nil {
+			return "", "", fmt.Errorf("NodePort service found but failed to get node IP: %w", err)
+		}
+		serverAddress = nodeIP
+
+		for _, port := range service.Spec.Ports {
+			if port.NodePort != 0 && (port.Name == "https" || port.Port == 443 || port.Port == 8443) {
+				serverPort = strconv.Itoa(int(port.NodePort))
+				break
+			}
+		}
+		// If no named match, use the first port with a NodePort
+		if serverPort == "443" {
+			for _, port := range service.Spec.Ports {
+				if port.NodePort != 0 {
+					serverPort = strconv.Itoa(int(port.NodePort))
+					break
+				}
+			}
+		}
+		klog.InfoS("Discovered ArgoCD agent server endpoint via NodePort",
+			"address", serverAddress, "port", serverPort)
+		return serverAddress, serverPort, nil
+	}
+
+	return "", "", fmt.Errorf("no external endpoint found for service %s in namespace %s (type=%s, no LoadBalancer ingress)",
+		service.Name, argoCDNamespace, service.Spec.Type)
+}
+
+// getNodeInternalIP returns the InternalIP of the first node in the cluster
+func (r *GitOpsClusterReconciler) getNodeInternalIP(ctx context.Context) (string, error) {
+	nodeList := &corev1.NodeList{}
+	if err := r.List(ctx, nodeList); err != nil {
+		return "", fmt.Errorf("failed to list nodes: %w", err)
+	}
+	for _, node := range nodeList.Items {
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP {
+				return addr.Address, nil
+			}
 		}
 	}
-
-	klog.InfoS("Discovered ArgoCD agent server endpoint", "address", serverAddress, "port", serverPort)
-	return serverAddress, serverPort, nil
+	return "", fmt.Errorf("no node with InternalIP found")
 }

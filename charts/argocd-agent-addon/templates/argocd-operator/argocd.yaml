@@ -17,7 +17,7 @@ spec:
         enableWebSocket: false
         keepAliveMinInterval: "30s"
         service:
-          type: LoadBalancer
+          type: {{ .Values.principalServiceType | default "NodePort" }}
         route:
           enabled: false
       namespace:
